@@ -18,7 +18,7 @@ Do NOT auto-invoke. Always let the user opt in.
 
 ## The Panels
 
-The gang is defined by **models**, not providers. Which provider serves a model changes over time, so resolve the route at dispatch time (see step 2).
+The gang is defined by **models**, not providers. Which provider serves a model changes over time, so resolve the route at dispatch time (see step 3).
 
 **Small panel (default):**
 
@@ -49,7 +49,7 @@ digraph gang {
   craft [label="1. Craft standalone prompt" shape=box];
   setup [label="2. Assign pseudonyms" shape=box];
   resolve [label="3. Resolve each model to a route\nvia orchestrator_capabilities" shape=box];
-  dispatch [label="4. delegate_task for every seat\nin parallel (async, full access)\neach writes to its own\nfresh temp dir" shape=box];
+  dispatch [label="4. Write shared brief, show dispatch table,\ndelegate_task for every seat\nin parallel (async, full access)" shape=box];
   present [label="5. Present labeled responses" shape=box];
   synth1 [label="6. Synthesize Round 1" shape=box];
   offer [label="7. Offer cross-pollination" shape=diamond];
@@ -77,7 +77,7 @@ digraph gang {
 
 Distill conversation context into a **self-contained question** that makes sense without any prior history. Delegated agents see only the task prompt, never this conversation. If code or documents are needed, inline the relevant contents directly in the prompt.
 
-Every seat gets the **exact same prompt**. No agent gets an information advantage. The only per-seat differences are the agent's pseudonym and its output file path (see step 3).
+Every seat gets the **exact same brief**, delivered as one shared file (see step 4). No agent gets an information advantage. The only per-seat differences are the agent's pseudonym and its output directory, which live in a short per-seat task prompt, never in the brief.
 
 ### 2. Assign Pseudonyms
 
@@ -97,60 +97,83 @@ Call `orchestrator_capabilities` and find each panel model in the live catalog. 
 Rules:
 - Only consider providers with `canRunChildTask: true` (or `canRunCrossProviderChildTask: true` for providers other than the inherited one) and no blocking `constraints`.
 - If a model is offered by several providers, prefer the model maker's first-party provider (e.g. Codex for GPT, Claude for Claude), then an aggregator such as OpenCode.
-- Between variants of the same model on one route, prefer the paid one over a `-free` variant (free tiers tend to be rate-limited or logged).
+- Never use a `-free` variant, even as a fallback. If only a free variant is listed, the seat's model is unavailable.
 - Do not substitute a different model for a seat (e.g. a different Grok version, or a Muse model other than Spark 1.3). If a seat's model is unavailable on every route, dispatch the rest and tell the user which seat is empty and why.
 
 ### 4. Dispatch in Parallel
 
-Every seat runs with `runtimeMode: "full-access"`. Don't ask the user about permissions, and don't restrict the agents. Tell them in the prompt to go all in: read files, run commands, and research the web if it helps them answer.
+Every seat runs with `runtimeMode: "full-access"`. Don't ask the user about permissions, and don't restrict the agents. The brief tells them to go all in: read files, run commands, and research the web if it helps them answer.
 
-**Give every seat its own temp directory, fresh for every round.** Agents have full access, so a shared output folder would let them read each other's answers. Before each round, create one directory per seat with plain `mktemp -d` (no prefix, so the directory is indistinguishable from any other temp dir) and keep the paths in this thread:
+**Create the session's directories.** At the start of the session, create one shared session directory, then one output directory per seat for this round, all with plain `mktemp -d` (no prefix, so nothing marks them as belonging to the gang):
 
 ```bash
+echo "session $(mktemp -d)"
 for p in Doc Grumpy Sleepy; do echo "$p $(mktemp -d)"; done
 ```
 
-Each agent is told only its own directory. The answer file inside it is always named `answer.md`, so neither the path nor the filename carries a pseudonym or model. Never reuse a directory across rounds or seats, and never put anything else (the brief, other answers, the roster) in a seat's directory.
+Create fresh seat directories for every round; never reuse one across rounds or seats. Each agent is told only its own output directory. Its answer file is always `answer.md`, so neither path nor filename carries a pseudonym or model. Nothing but the agent's own work ever goes in a seat directory.
 
-Wrap the shared prompt with a per-seat header and footer:
+**Write the round's brief once.** Write the shared brief to `<session dir>/brief-r<N>.md`. It holds everything every panelist needs, ending with these rules:
 
 ```
-You are <Pseudonym>, one member of an anonymous panel of independent reviewers.
-
-<the exact shared prompt>
-
 ---
 
-Output rules:
-- Write your complete answer as Markdown to <seat's temp dir>/answer.md.
-  That file is your answer; it is what gets read, so put everything in it.
-  Use that directory for any scratch work too.
+Rules for every panelist:
+- You are one member of an anonymous panel of independent reviewers. Your task prompt
+  tells you your pseudonym and your output directory.
+- Go all in: read files, run commands, and research the web if it helps you answer.
+- Write your complete answer as Markdown to answer.md in your output directory. That
+  file is your answer; it is what gets read, so put everything in it. Use that
+  directory for any scratch work too.
 - Do not reveal which model, company, or product you are, in the file or anywhere else.
-  Refer to yourself only as <Pseudonym>.
+  Refer to yourself only by your pseudonym.
 - Your answer must be independent. Do not look for other panelists' work.
-- When done, reply with just the path of your file.
+- When done, reply with just the path of your answer file.
 ```
 
-Make one `delegate_task` call per seat, all in the same turn:
+The brief is identical for every seat by construction. It never contains a pseudonym-to-model mapping, an output directory, or anything else specific to one seat.
+
+**Each seat's task prompt is just the pointer:**
+
+```
+You are <Pseudonym>. Your output directory is <seat dir>.
+Read <session dir>/brief-r<N>.md and follow it.
+```
+
+**Show the dispatch table before dispatching.** In the same message as the dispatch, show the user one row per seat. This table is also the session record: keep it current in the thread and generate prompts, titles, and request IDs from it rather than retyping names.
+
+```
+| Seat | Pseudonym | Model | Route (provider / model id) | Output dir |
+|------|-----------|-------|-----------------------------|------------|
+| OpenAI | Grumpy | GPT-6 Astra | codex / gpt-6-astra | /var/folders/.../tmp.Ab12 |
+| Anthropic | Sleepy | Claude Opus 5.5 | claudeAgent / claude-opus-5-5 | /var/folders/.../tmp.Cd34 |
+| xAI | Doc | Grok 4.6 | grok / grok-4.6 | /var/folders/.../tmp.Ef56 |
+| Zhipu | - | GLM 5.3 Flash | unavailable: only a -free variant listed | - |
+```
+
+Then make one `delegate_task` call per seat, all in the same turn:
 
 ```json
 {
-  "task": "<wrapped prompt>",
-  "title": "Gang R1 - <topic> - <Pseudonym>",
+  "task": "<the pointer prompt>",
+  "title": "Gang R<N> - <topic> - <Pseudonym>",
   "role": "review",
   "mode": "async",
   "runtimeMode": "full-access",
   "target": { "providerInstanceId": "<resolved provider>", "model": "<resolved model id>" },
-  "clientRequestId": "gang-<topic-slug>-r1-<pseudonym>"
+  "clientRequestId": "gang-<topic-slug>-<session dir basename>-r<N>-<pseudonym>"
 }
 ```
 
 - Use `mode: "async"`, then end the turn. Each child's completion wakes this thread with its result; do not poll or spawn watchers. Use `task_status` only if a result is needed mid-turn.
 - The task title uses the pseudonym, not the model, so nothing in the child thread's framing names the model.
-- Keep every returned `taskId`, mapped to its seat and pseudonym.
-- `clientRequestId` must be unique per seat per round and stable across retries of that same dispatch.
-- Wait until every seat has reported (or failed) before presenting. Read each answer from its seat's `answer.md`. If a file is missing or empty, fall back to the task summary and say so. If a seat fails, report the error from its summary rather than silently dropping it.
+- Record every returned `taskId` in the session table.
+- `clientRequestId` must be unique per seat per round per session and stable across retries of that same dispatch. The session directory's basename makes it unique across sessions.
 - Use `task_cancel` if the user calls off a round.
+
+**One failure never stops the gang.** Do not test routes before dispatching; just dispatch. If a seat fails, whether at dispatch or later (a provider error, a billing or subscription error, a timeout, an empty `answer.md`), carry on with every other seat. Mark the failed seat in the session table with the error from its summary, and keep going. When presenting, list every failed seat and why, right after the dispatch table or at the top of the results. A failed seat sits out the rest of that round; it can rejoin in a later round if the user wants, with a note that it has no earlier answer.
+
+Wait until every seat has reported (or failed) before presenting. Read each answer from its seat's `answer.md`. If a file is missing or empty but the summary contains a real answer, use the summary and say so; otherwise treat the seat as failed.
 
 ### 5. Present Results
 
@@ -192,24 +215,25 @@ Only proceed if the user opts in. Cross-pollination is where the real value emer
 
 ### 8. Cross-Pollinate
 
-Every round is a **new `delegate_task` call** per seat, with a new `clientRequestId` (`...-r2-<pseudonym>`, and so on). Never continue a round by sending to the child thread. Since children have no memory of earlier rounds, each new prompt must carry the original brief plus the context below.
+Every round is a **new `delegate_task` call** per seat, with a new `clientRequestId` (`...-r2-<pseudonym>`, and so on). Never continue a round by sending to the child thread. Since children have no memory of earlier rounds, each round's brief must carry the original brief plus the context below.
 
 **Panelists stay anonymous to each other.** They see each other only by pseudonym. Before pasting a response into another agent's prompt, scrub anything that gives away its author: self-identifying phrases ("as Claude", "OpenAI's guidance"), signature formatting a model is known for, or meta remarks about its own training. Change only what identifies the author; keep the substance intact. Never pass along the roster, model names, or routes.
 
-Each panelist receives:
-- The original prompt from Round 1
-- Its own previous answer, labeled as its own
-- Every other panelist's full previous answer, labeled only by pseudonym
+Write one shared `brief-r<N>.md` for the round, containing:
+- The original brief from Round 1 (without its rules section, which is restated at the end)
+- Every panelist's previous answer, scrubbed, each labeled only by pseudonym
 - A structured set of questions forcing genuine engagement
-- The same output rules as Round 1, pointing at a **new** temp directory created for this round
+- The same "Rules for every panelist" section as Round 1
+
+Each panelist finds its own earlier answer under its own pseudonym, so the same file works for every seat. Dispatch with the same pointer prompt as Round 1, each seat pointing at a **new** output directory created for this round, and show the updated dispatch table.
 
 **Template for cross-pollination prompt:**
 
 ```
-You are <Pseudonym>. You previously reviewed [TOPIC] as part of an anonymous panel. The original
-brief is below, followed by your own earlier answer and the independent reviews of [N] other
-panelists. You do not know who they are, and it does not matter: judge the arguments.
-Read them carefully, then respond:
+You previously reviewed [TOPIC] as part of an anonymous panel. The original brief is below,
+followed by every panelist's earlier answer, labeled by pseudonym. Your own answer is the one
+under your pseudonym; the rest come from other panelists. You do not know who they are, and it
+does not matter: judge the arguments. Read them carefully, then respond:
 
 1. Where do you think they're right and you missed something?
 2. Where do you think they're wrong or soft?
@@ -224,11 +248,6 @@ Be direct. Disagree where you disagree. Don't be diplomatic.
 ## ORIGINAL BRIEF:
 [Round 1 prompt]
 
-## YOUR EARLIER ANSWER (<Pseudonym>):
-[its own previous response]
-
----
-
 ## <PSEUDONYM A>'S REVIEW:
 [full scrubbed response]
 
@@ -239,12 +258,16 @@ Be direct. Disagree where you disagree. Don't be diplomatic.
 
 ---
 
-[Output rules, as in Round 1, with this round's new temp dir]
+[...one section per panelist that answered]
+
+---
+
+[Rules for every panelist, as in Round 1]
 ```
 
 **Key rules:**
-- Each panelist gets every other panelist's response; the set is symmetric
-- Pseudonyms only. No model names, labs, or routes anywhere in the prompt
+- Every panelist reads the same file; the set is symmetric
+- Pseudonyms only. Never reveal which pseudonym is which model, lab, or route. (Model names that are part of the subject matter are fine.)
 - The questions force concession ("where did they catch something you missed") and disagreement ("where are they wrong")
 - "Don't be diplomatic" is load-bearing - without it, models default to "great points all around"
 - Dispatch all seats in parallel (same as Round 1)
@@ -272,7 +295,7 @@ The user can keep going. Common follow-up rounds:
 
 For each additional round:
 1. Construct a new prompt that includes the original brief, all prior findings, the user's responses, and unresolved objections, plus the new instruction
-2. Dispatch every seat in parallel with fresh `delegate_task` calls
+2. Write it as that round's shared brief, then dispatch every seat in parallel with fresh `delegate_task` calls and fresh output directories
 3. Present and synthesize
 
 There is no fixed number of rounds. Stop when the user has what they need or when returns are diminishing.
@@ -283,24 +306,27 @@ When the user is done with the gang, archive the session and clean up. Use the p
 
 ```
 scratchpad/gang/<YYYY-MM-DD>-<topic-slug>/
-  brief.md         # the Round 1 prompt
+  brief-r1.md      # each round's shared brief, copied from the session dir
+  brief-r2.md
   r1/Doc.md        # copied from Doc's round 1 temp dir
   r1/Grumpy.md
   r1/Sleepy.md
   r2/Doc.md
   ...
-  roster.md        # pseudonym, model, route, and taskId per round for each seat
+  roster.md        # the session table: pseudonym, model, route, taskId, and failures per round
 ```
 
-Copy each seat's `answer.md` from its temp directory to `r<N>/<Pseudonym>.md`, double-checking each copy against the mapping. Then write `roster.md` and delete the temp directories. If the archive lives in a git repository, commit it.
+Copy each seat's `answer.md` from its temp directory to `r<N>/<Pseudonym>.md`, double-checking each copy against the mapping. Copy every `brief-r<N>.md`, write `roster.md` (the session table, including failed seats and their errors), and delete the temp directories. If the archive lives in a git repository, commit it.
 
 ---
 
 ## Common Mistakes
 
 - **Hardcoding providers or model IDs.** Always resolve from `orchestrator_capabilities`. Routes change; the panel's models are what matter.
-- **Silently substituting a model.** If a seat's model is missing, leave the seat empty and say so. A stand-in from a different lab or version is a different gang.
-- **Giving agents different context.** All seats must get the identical prompt (Round 1) or symmetric context (Round 2+).
+- **Silently substituting a model.** If a seat's model is missing, leave the seat empty and say so. A stand-in from a different lab or version, or a `-free` variant, is a different gang.
+- **Stopping because one seat failed.** A failed provider never halts the round. Carry on with the rest and report what failed and why.
+- **Pre-testing routes.** Don't. Dispatch directly and handle failures as they come.
+- **Giving agents different context.** Everything substantive goes in the shared brief file. Per-seat task prompts carry only the pseudonym, output directory, and brief path.
 - **Assuming children remember.** Every delegated task starts fresh. Round 2+ prompts must carry the original brief and prior responses.
 - **Continuing a round through the child thread.** Each round is a new `delegate_task` with its own `clientRequestId`; the `childThreadId` is storage only.
 - **Polling.** Dispatch async and end the turn; completions wake this thread.
