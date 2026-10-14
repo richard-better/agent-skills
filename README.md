@@ -1,26 +1,25 @@
-# Claude Code Skills
+# Agent Skills
 
-A personal collection of reusable [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skills.
+A personal collection of reusable agent skills, installable with [`skills`](https://github.com/vercel-labs/skills).
 
 ## Skills
 
 | Skill | Description |
 |-------|-------------|
-| [gcalcli](./gcalcli/) | Manage Google Calendar from the command line — read events, create events, handle timezones |
+| [the-gang-t3](./skills/the-gang-t3/) | Ask a panel of models from different labs the same question in parallel through [T3 Code](https://github.com/pingdotgg/t3code)'s `delegate_task`, then synthesize and cross-pollinate their answers |
 
-## Usage
-
-### As a submodule
+## Install
 
 ```bash
-git submodule add git@github.com:richard-better/claude-code-skills.git .claude/skills-shared
+# Pick skills interactively
+npx skills add richard-better/claude-code-skills
 
-# Symlink individual skills into .claude/skills/
-ln -s ../skills-shared/gcalcli .claude/skills/gcalcli
+# Or install one directly
+npx skills add richard-better/claude-code-skills --skill the-gang-t3
 ```
 
-### Manual copy
+Add `-g` to install globally instead of into the current project, and `-a <agent>` to target a specific agent (e.g. `claude-code`, `codex`).
 
-```bash
-cp -r gcalcli/ ~/.claude/skills/gcalcli
-```
+## Requirements
+
+- **the-gang-t3** runs inside T3 Code, which provides the `orchestrator_capabilities` and `delegate_task` tools. The panel models must be configured as providers in T3 Code; seats whose model is unavailable are left empty.
