@@ -12,10 +12,10 @@ A personal collection of reusable agent skills, installable with [`skills`](http
 
 ```bash
 # Pick skills interactively
-npx skills add richard-better/claude-code-skills
+npx skills add richard-better/agent-skills
 
 # Or install one directly
-npx skills add richard-better/claude-code-skills --skill the-gang-t3
+npx skills add richard-better/agent-skills --skill the-gang-t3
 ```
 
 Add `-g` to install globally instead of into the current project, and `-a <agent>` to target a specific agent (e.g. `claude-code`, `codex`).
